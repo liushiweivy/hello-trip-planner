@@ -1,0 +1,15 @@
+# secrets
+.env
+*.key
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+# node
+node_modules/
+dist/
+# runtime
+logs/
+*.log
+data/

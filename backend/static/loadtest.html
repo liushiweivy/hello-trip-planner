@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>旅行规划 · 压测与监控台</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #0f1420; color: #e8eaf0; min-height: 100vh; padding: 24px;
+  }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  h1 .tag { font-size: 12px; font-weight: normal; color: #8a93a8; margin-left: 10px; }
+  .sub { color: #8a93a8; font-size: 13px; margin-bottom: 20px; }
+  .panel {
+    background: #171e30; border: 1px solid #252e48; border-radius: 14px;
+    padding: 18px 20px; margin-bottom: 18px;
+  }
+  .controls { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field label { font-size: 12px; color: #8a93a8; }
+  .field input, .field select {
+    background: #0f1420; border: 1px solid #2c3757; color: #e8eaf0;
+    border-radius: 8px; padding: 8px 12px; font-size: 14px; width: 130px; outline: none;
+  }
+  .field input:focus, .field select:focus { border-color: #d4a94e; }
+  button {
+    background: linear-gradient(135deg, #d4a94e, #b8862e); color: #1a1408; border: none;
+    border-radius: 8px; padding: 9px 22px; font-size: 14px; font-weight: 700;
+    cursor: pointer; transition: filter .2s;
+  }
+  button:hover { filter: brightness(1.1); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.ghost { background: #232c46; color: #c6cde0; }
+  .warn { color: #e8b345; font-size: 12px; margin-top: 10px; display: none; }
+  .grid { display: grid; gap: 12px; }
+  .stat-grid { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+  .stat {
+    background: #101828; border: 1px solid #232c46; border-radius: 10px; padding: 12px 14px;
+  }
+  .stat .k { font-size: 12px; color: #8a93a8; margin-bottom: 6px; }
+  .stat .v { font-size: 20px; font-weight: 700; color: #f0d9a8; }
+  .stat .v small { font-size: 12px; color: #8a93a8; font-weight: 400; }
+  .users { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+  .user {
+    width: 88px; border-radius: 8px; padding: 7px 0 6px; text-align: center;
+    font-size: 12px; background: #232c46; color: #aab3c8; border: 1px solid transparent;
+  }
+  .user.running { border-color: #d4a94e; color: #f0d9a8; animation: pulse 1.2s infinite; }
+  .user.done { background: #1d3a2a; color: #7fd8a0; }
+  .user.failed { background: #402028; color: #f08a8a; }
+  @keyframes pulse { 50% { opacity: .55; } }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { padding: 7px 8px; text-align: left; border-bottom: 1px solid #232c46; white-space: nowrap; }
+  th { color: #8a93a8; font-weight: 500; position: sticky; top: 0; background: #171e30; }
+  td.num { font-variant-numeric: tabular-nums; }
+  .pill { border-radius: 999px; padding: 1px 8px; font-size: 11px; }
+  .pill.success { background: #1d3a2a; color: #7fd8a0; }
+  .pill.error { background: #402028; color: #f08a8a; }
+  .pill.fallback, .pill.retry_success, .pill.truncated { background: #3a3320; color: #e8b345; }
+  .pill.cache_hit { background: #16394a; color: #7cc7f0; }
+  .pill.mock { background: #26304e; color: #9db4f0; }
+  .table-wrap { max-height: 320px; overflow: auto; }
+  .row-flex { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .muted { color: #8a93a8; font-size: 12px; }
+  select.slim { width: auto; padding: 5px 10px; font-size: 12px; }
+</style>
+</head>
+<body>
+  <h1>🧪 旅行规划 · 压测与监控台 <span class="tag" id="backendTag">存储后端检测中…</span></h1>
+  <p class="sub">模拟多人在线使用；mock 模式零 token 消耗，真实模式才调 LLM。监控数据来自 MySQL <code>request_metrics</code> 表。</p>
+
+  <!-- 压测控制区 -->
+  <div class="panel">
+    <div class="controls">
+      <div class="field"><label>并发人数</label><input id="userCount" type="number" min="1" max="50" value="10"></div>
+      <div class="field"><label>模式</label>
+        <select id="mode"><option value="mock">mock（不烧 token）</option><option value="real">真实 LLM</option></select>
+      </div>
+      <div class="field"><label>流程</label>
+        <select id="flow"><option value="outline">仅生成大纲</option><option value="full">大纲 + 4 套详情</option></select>
+      </div>
+      <div class="field"><label>城市（逗号分隔可多城）</label><input id="city" value="北京" style="width:200px"></div>
+      <div class="field"><label>天数</label><input id="days" type="number" min="1" max="7" value="2"></div>
+      <div class="field"><label>启动间隔(ms)</label><input id="ramp" type="number" min="0" max="2000" value="150"></div>
+      <button id="startBtn">🚀 开始压测</button>
+      <button id="refreshBtn" class="ghost">↻ 刷新监控</button>
+    </div>
+    <div class="warn" id="costWarn"></div>
+    <div class="users" id="userGrid"></div>
+  </div>
+
+  <!-- 监控摘要 -->
+  <div class="panel">
+    <div class="row-flex" style="margin-bottom:14px">
+      <strong>📊 监控摘要</strong>
+      <span class="muted">批次：</span>
+      <select id="batchSelect" class="slim" style="background:#0f1420;border:1px solid #2c3757;color:#e8eaf0;border-radius:8px"></select>
+      <span class="muted">过滤：</span>
+      <select id="mockFilter" class="slim" style="background:#0f1420;border:1px solid #2c3757;color:#e8eaf0;border-radius:8px">
+        <option value="all">全部</option><option value="mock">仅 mock</option><option value="real">仅真实</option>
+      </select>
+      <span class="muted" id="autoRefreshNote">每 3s 自动刷新</span>
+    </div>
+    <div class="grid stat-grid" id="statGrid"></div>
+  </div>
+
+  <!-- LLM 调用分类 -->
+  <div class="panel">
+    <div class="row-flex" style="margin-bottom:12px">
+      <strong>🗂️ LLM 调用分类</strong>
+      <span class="muted">阶段 × 结局 × 城市，截断与推理占比一眼定位预算/模型问题</span>
+      <span id="statusPills" class="row-flex" style="gap:6px"></span>
+    </div>
+    <div class="table-wrap" style="max-height:260px">
+      <table>
+        <thead><tr>
+          <th>阶段</th><th>次数</th><th>成功率</th><th>平均(s)</th><th>最大(s)</th>
+          <th>prompt tok</th><th>completion tok</th><th>推理 tok</th><th>推理占比</th>
+          <th>总 tok</th><th>截断</th>
+        </tr></thead>
+        <tbody id="phaseBody"></tbody>
+      </table>
+    </div>
+    <div class="table-wrap" style="max-height:180px;margin-top:12px" id="cityWrap">
+      <table>
+        <thead><tr>
+          <th>城市</th><th>次数</th><th>成功率</th><th>平均(s)</th><th>总 tok</th>
+        </tr></thead>
+        <tbody id="cityBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- 明细表 -->
+  <div class="panel">
+    <strong>🧾 最近调用</strong>
+    <div class="table-wrap" style="margin-top:10px">
+      <table>
+        <thead><tr>
+          <th>时间</th><th>端点</th><th>阶段</th><th>状态</th><th>耗时(s)</th><th>排队(s)</th>
+          <th>fr</th><th>#</th><th>预算</th>
+          <th>prompt tok</th><th>completion tok</th><th>推理 tok</th><th>总 tok</th>
+          <th>方案</th><th>城市</th><th>mock</th><th>批次/错误</th>
+        </tr></thead>
+        <tbody id="rowsBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let currentBatch = '';
+let polling = null;
+
+function fmtTokens(n) { return n == null ? '-' : Number(n).toLocaleString(); }
+function fmtMs(ms) { return (ms / 1000).toFixed(1); }
+
+// ---------- 压测 ----------
+function parseCities() {
+  // 逗号/顿号/空格分隔的多城市；第 i 个虚拟用户压 cities[(i-1) % len]
+  const list = $('city').value.split(/[,，、\s]+/).map(s => s.trim()).filter(Boolean);
+  return list.length ? list : ['北京'];
+}
+
+function makeRequest(tag, userSlot, cities) {
+  const days = Math.max(1, parseInt($('days').value) || 2);
+  const start = new Date(Date.now() + 7 * 864e5);
+  const end = new Date(start.getTime() + (days - 1) * 864e5);
+  const f = (d) => d.toISOString().slice(0, 10);
+  return {
+    city: cities[(userSlot - 1) % cities.length],
+    start_date: f(start), end_date: f(end), travel_days: days,
+    transportation: '公共交通', accommodation: '经济型酒店',
+    preferences: [], free_text_input: '',
+    client_tag: `${tag}|u${userSlot}`,
+    mock_llm: $('mode').value === 'mock'
+  };
+}
+
+async function runUser(slot, tag, flow, cities) {
+  // cities 由 startBtn 启动时解析一次传入：运行中途改输入框不影响本批次一致性
+  const city = cities[(slot - 1) % cities.length];
+  const cell = document.createElement('div');
+  cell.className = 'user running'; cell.id = 'u' + slot;
+  cell.textContent = `#${slot} ${city} 大纲…`;
+  $('userGrid').appendChild(cell);
+  const t0 = performance.now();
+  try {
+    const outlineResp = await fetch('/api/trip/plan', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(makeRequest(tag, slot, cities))
+    }).then(r => r.json());
+    if (!outlineResp.success) throw new Error(outlineResp.message || '大纲失败');
+    if (flow === 'full') {
+      const req = makeRequest(tag, slot, cities);
+      for (const plan of outlineResp.data.plans) {
+        cell.textContent = `#${slot} ${city} 详情${plan.plan_id}/4`;
+        const d = await fetch('/api/trip/detail', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ request: req, outline: plan })
+        }).then(r => r.json());
+        if (!d.success) throw new Error('详情失败: ' + (d.message || ''));
+      }
+    }
+    cell.className = 'user done';
+    cell.textContent = `#${slot} ${city} ${((performance.now() - t0) / 1000).toFixed(1)}s`;
+  } catch (e) {
+    cell.className = 'user failed';
+    cell.textContent = `#${slot} ${city} 失败`;
+    cell.title = e.message;
+  }
+}
+
+$('startBtn').onclick = () => {
+  const n = Math.min(50, Math.max(1, parseInt($('userCount').value) || 1));
+  const mode = $('mode').value, flow = $('flow').value;
+  const calls = n * (flow === 'full' ? 5 : 1);
+  if (mode === 'real') {
+    if (n > 5) { alert('真实模式最多 5 人（控制 token 消耗）'); return; }
+    if (!confirm(`真实模式将发起 ${calls} 次推理模型调用（每次约 145-300s、上万 tokens），确认？`)) return;
+  }
+  currentBatch = 'lt-' + new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
+  $('userGrid').innerHTML = '';
+  $('startBtn').disabled = true;
+  const ramp = Math.max(0, parseInt($('ramp').value) || 0);
+  const cities = parseCities();  // 启动时解析一次，整批一致
+  const jobs = [];
+  for (let i = 1; i <= n; i++) {
+    jobs.push(new Promise(res => setTimeout(res, i * ramp)).then(() => runUser(i, currentBatch, flow, cities)));
+  }
+  Promise.all(jobs).then(() => { $('startBtn').disabled = false; });
+  loadBatches().then(() => { $('batchSelect').value = currentBatch; });
+};
+
+// ---------- 监控 ----------
+async function loadBatches() {
+  const r = await fetch('/api/metrics/batches').then(x => x.json());
+  $('backendTag').textContent = `存储后端：${r.backend === 'mysql' ? 'MySQL ✅' : '内存降级 ⚠️'}`;
+  const sel = $('batchSelect');
+  const prev = sel.value || currentBatch;
+  sel.innerHTML = '<option value="">（全部批次）</option>' +
+    r.data.map(b => `<option value="${esc(b.client_tag)}">${esc(b.client_tag)}（${b.calls} 次）</option>`).join('');
+  if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
+}
+
+async function loadSummary() {
+  const tag = $('batchSelect').value, mock = $('mockFilter').value;
+  const q = `?client_tag=${encodeURIComponent(tag)}&mock=${mock}`;
+  const [sum, recent, cost] = await Promise.all([
+    fetch('/api/metrics/summary' + q).then(x => x.json()),
+    fetch('/api/metrics/recent?limit=80' + q.replace('?', '&')).then(x => x.json()),
+    fetch('/api/cost/status').then(x => x.json()).catch(() => null)
+  ]);
+  const d = sum.data;
+
+  // 成本预算卡：今日真实 token 用量/预算 + 断路器与备用供应商状态
+  let budgetCards = '';
+  if (cost) {
+    const budget = cost.daily_token_budget;
+    const budgetTxt = budget > 0
+      ? `${fmtTokens(cost.tokens_used_today)}<small> / ${fmtTokens(budget)}</small>`
+      : fmtTokens(cost.tokens_used_today) + '<small>（不限预算）</small>';
+    const brk = cost.llm.breaker;
+    const brkTxt = brk.state === 'closed' ? '闭合 ✅'
+      : `熔断 ⚠️<small>（剩 ${brk.open_remaining_s}s）</small>`;
+    budgetCards = [
+      ['今日真实 tokens', budgetTxt],
+      ['主 LLM 断路器', brkTxt],
+      ['备用供应商', cost.llm.backup_configured ? '已配置 ✅' : '未配置'],
+    ].map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
+    const warn = $('costWarn');
+    if (cost.budget_limited) {
+      warn.style.display = 'block';
+      warn.textContent = `💰 成本熔断中：今日已用 ${fmtTokens(cost.tokens_used_today)} tokens ≥ 预算 ${fmtTokens(budget)}，新的真实 LLM 请求将被 429 拦截（缓存/预制路线不受影响）`;
+    } else {
+      warn.style.display = 'none';
+    }
+  }
+
+  $('statGrid').innerHTML = budgetCards + [
+    ['调用次数', d.count], ['成功率', (d.success_rate * 100).toFixed(1) + '%'],
+    ['平均耗时', fmtMs(d.latency_avg_ms) + '<small>s</small>'],
+    ['P50 耗时', fmtMs(d.latency_p50_ms) + '<small>s</small>'],
+    ['P95 耗时', fmtMs(d.latency_p95_ms) + '<small>s</small>'],
+    ['最大耗时', fmtMs(d.latency_max_ms) + '<small>s</small>'],
+    ['prompt tokens', fmtTokens(d.prompt_tokens)],
+    ['completion tokens', fmtTokens(d.completion_tokens)],
+    ['其中推理 tokens', fmtTokens(d.reasoning_tokens) +
+      `<small>（占 ${(d.reasoning_share * 100).toFixed(0)}%）</small>`],
+    ['总 tokens', fmtTokens(d.total_tokens)],
+  ].map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
+
+  // 结局分布 pill（截断/降级/缓存等非成功结局各自计数）
+  $('statusPills').innerHTML = Object.entries(d.by_status || {})
+    .map(([s, n]) => `<span class="pill ${s}">${s} ×${n}</span>`).join('');
+
+  // 按阶段分类：哪类调用慢、哪类烧 token、截断集中在哪
+  $('phaseBody').innerHTML = Object.entries(d.by_phase || {}).map(([phase, b]) => `
+    <tr>
+      <td>${phase}</td>
+      <td class="num">${b.count}</td>
+      <td class="num">${(b.success_rate * 100).toFixed(0)}%</td>
+      <td class="num">${fmtMs(b.latency_avg_ms)}</td>
+      <td class="num">${fmtMs(b.latency_max)}</td>
+      <td class="num">${fmtTokens(b.prompt_tokens)}</td>
+      <td class="num">${fmtTokens(b.completion_tokens)}</td>
+      <td class="num">${fmtTokens(b.reasoning_tokens)}</td>
+      <td class="num">${(b.reasoning_share * 100).toFixed(0)}%</td>
+      <td class="num">${fmtTokens(b.tokens)}</td>
+      <td class="num">${b.truncated || ''}</td>
+    </tr>`).join('') || '<tr><td colspan="11" class="muted">暂无数据</td></tr>';
+
+  // 按城市对比（多城市压测）
+  const cities = Object.entries(d.by_city || {});
+  $('cityWrap').style.display = cities.length > 1 ? '' : 'none';
+  $('cityBody').innerHTML = cities.map(([city, b]) => `
+    <tr>
+      <td>${esc(city)}</td>
+      <td class="num">${b.count}</td>
+      <td class="num">${(b.success_rate * 100).toFixed(0)}%</td>
+      <td class="num">${fmtMs(b.latency_avg_ms)}</td>
+      <td class="num">${fmtTokens(b.tokens)}</td>
+    </tr>`).join('');
+
+  renderRows(recent);
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+
+function renderRows(recent) {
+  $('rowsBody').innerHTML = recent.data.map(r => `
+    <tr>
+      <td>${String(r.ts).slice(5, 19)}</td><td>${r.endpoint.replace('/api/trip/', '')}</td>
+      <td>${r.phase}</td>
+      <td><span class="pill ${r.status}">${r.status}</span></td>
+      <td class="num">${fmtMs(r.latency_ms)}</td>
+      <td class="num">${r.queue_ms ? fmtMs(r.queue_ms) : ''}</td>
+      <td class="muted">${r.finish_reason || ''}</td>
+      <td class="num">${r.attempt > 1 ? r.attempt : ''}</td>
+      <td class="num">${r.max_tokens ? fmtTokens(r.max_tokens) : ''}</td>
+      <td class="num">${fmtTokens(r.prompt_tokens)}</td>
+      <td class="num">${fmtTokens(r.completion_tokens)}</td>
+      <td class="num">${fmtTokens(r.reasoning_tokens)}</td>
+      <td class="num">${fmtTokens(r.total_tokens)}</td>
+      <td>${r.plan_id ? r.plan_id + '·' + esc(r.plan_style || '') : '-'}</td>
+      <td>${esc(r.city || '-')}</td>
+      <td>${r.mock ? '<span class="pill mock">mock</span>' : ''}</td>
+      <td class="muted" title="${esc(r.prefs || '')}${r.prompt_excerpt ? '\n--- prompt ---\n' + esc(r.prompt_excerpt) : ''}">${r.error ? '❌ ' + esc(String(r.error).slice(0, 40)) : esc((r.client_tag || '').split('|')[0])}</td>
+    </tr>`).join('');
+}
+
+$('refreshBtn').onclick = () => { loadBatches(); loadSummary(); };
+$('batchSelect').onchange = loadSummary;
+$('mockFilter').onchange = loadSummary;
+
+loadBatches().then(loadSummary);
+polling = setInterval(loadSummary, 3000);
+</script>
+</body>
+</html>

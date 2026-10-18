@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# 离线测试（tests/ 全部不触网、不调真实 LLM）
+pytest>=8.0.0

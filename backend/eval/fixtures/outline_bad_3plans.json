@@ -1,0 +1,27 @@
+{
+  "_comment": "反例：只有 3 套方案 + plan_id 跳号 + 经济预算不低于经典，契约校验必须报出全部三类问题（评测器自检用）",
+  "plans": [
+    {
+      "plan_id": 1,
+      "style": "经典全景",
+      "tagline": "x",
+      "highlights": [],
+      "estimated_budget": 800,
+      "days": [
+        {"date": "", "day_index": 0, "title": "t",
+         "spots": [{"name": "景点A", "address": "a", "location": null, "category": "景点"}]}
+      ]
+    },
+    {
+      "plan_id": 3,
+      "style": "经济实惠",
+      "tagline": "x",
+      "highlights": [],
+      "estimated_budget": 1200,
+      "days": [
+        {"date": "", "day_index": 0, "title": "t",
+         "spots": [{"name": "景点B", "address": "a", "location": null, "category": "景点"}]}
+      ]
+    }
+  ]
+}
