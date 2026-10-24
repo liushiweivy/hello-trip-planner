@@ -227,6 +227,23 @@ def test_detail_cache_hit_skips_llm_and_rebases(monkeypatch):
     assert rows[0]["status"] == "cache_hit" and rows[0]["phase"] == "detail"
 
 
+def test_detail_cache_hit_strips_legacy_budget(monkeypatch):
+    """旧 7d 详情缓存里可能带 budget 字段：命中时必须剥除（预算改由后台任务生成）"""
+    service, cache, metrics = _make_service(monkeypatch)
+    req = _request(start="2026-03-01")
+    outline = _detail_outline()
+    legacy = _detail_payload()
+    legacy["budget"] = {"total_attractions": 60, "total_hotels": 200,
+                        "total_meals": 50, "total_transportation": 30, "total": 340}
+    cache.put(make_detail_key(req, outline), "detail", "北京", 3, 1,
+              legacy, ttl_days=7)
+
+    plan = asyncio.run(service.plan_detail(req, outline))
+
+    assert plan.source == "cache"
+    assert plan.budget is None  # 旧缓存预算不复活
+
+
 def test_degraded_chunked_detail_not_cached(monkeypatch):
     """分段详情有降级块：质量不完整，不入缓存（下次重新生成）"""
     service, cache, metrics = _make_service(monkeypatch)

@@ -264,7 +264,7 @@ def reset_job_store() -> None:
 
 # ---------------- 任务 API ----------------
 
-VALID_KINDS = ("outline", "detail")
+VALID_KINDS = ("outline", "detail", "budget")
 
 
 def create_job(kind: str, owner_key: str, payload: Dict[str, Any],
@@ -287,8 +287,8 @@ _worker_task: Optional[asyncio.Task] = None
 
 async def _run_one(job: Dict[str, Any]) -> None:
     """执行单个任务：trace 贯穿日志/监控行，结果落库"""
-    from ..models.schemas import TripDetailRequest, TripRequest
-    from .trip_execution import execute_detail, execute_outline
+    from ..models.schemas import BudgetJobRequest, TripDetailRequest, TripRequest
+    from .trip_execution import execute_budget, execute_detail, execute_outline
 
     store = get_job_store()
     trace = new_trace_id()
@@ -300,6 +300,8 @@ async def _run_one(job: Dict[str, Any]) -> None:
         payload = json.loads(job["payload"])
         if job["kind"] == "outline":
             data = await execute_outline(TripRequest(**payload), job["owner_key"])
+        elif job["kind"] == "budget":
+            data = await execute_budget(BudgetJobRequest(**payload), job["owner_key"])
         else:
             data = await execute_detail(TripDetailRequest(**payload), job["owner_key"])
         store.mark(job["id"], "succeeded",

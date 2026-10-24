@@ -64,9 +64,6 @@ def _block_json(day_indices, start="2026-11-01") -> str:
         "city": "深圳", "start_date": start,
         "end_date": (base + timedelta(days=max(day_indices))).strftime("%Y-%m-%d"),
         "days": days, "overall_suggestions": "分段建议",
-        "budget": {"total_attractions": 10 * n, "total_hotels": 100,
-                   "total_meals": 20 * n, "total_transportation": 30,
-                   "total": 30 * n + 130},
     })
 
 
@@ -107,7 +104,7 @@ def test_invoke_patch_captures_finish_reason_and_budget():
 # ---------------- 分段详情 ----------------
 
 def test_chunked_detail_merges_blocks(monkeypatch):
-    """7 天行程 → 2 段（5+2）生成，合并后 7 天有序、预算求和、按块记账"""
+    """7 天行程 → 2 段（5+2）生成，合并后 7 天有序、预算恒为 None、按块记账"""
     service, store = _make_service(monkeypatch)
     monkeypatch.setattr(service, "_gather_hotels_weather",
                         lambda req: asyncio.sleep(0, result=([], [])))
@@ -126,8 +123,8 @@ def test_chunked_detail_merges_blocks(monkeypatch):
     assert len(calls) == 2  # 5+2 两段
     assert [d.day_index for d in plan.days] == list(range(7))
     assert [a.name for a in plan.days[6].attractions] == ["景点6"]
-    # 两块预算求和：(30*5+130) + (30*2+130) = 470
-    assert plan.budget.total == 470
+    # 预算已移出详情阶段（后台 budget 任务单独生成）
+    assert plan.budget is None
     assert plan.overall_suggestions == "分段建议"
 
     phases = [r["phase"] for r in store.recent()]
@@ -157,7 +154,7 @@ def test_chunked_detail_bad_block_degrades_only_that_block(monkeypatch):
     assert [d.day_index for d in plan.days] == list(range(7))
     assert plan.days[0].attractions[0].name == "景点0"          # 段1 真实
     assert "推荐景点" in plan.days[5].attractions[0].name        # 段2 已兜底
-    assert plan.budget is None or plan.budget.total >= 0         # 兜底块无预算也不炸
+    assert plan.budget is None                                  # 详情阶段不再有预算
 
     rows = {r["phase"]: r["status"] for r in store.recent()}
     assert rows["detail_b1"] == "success"

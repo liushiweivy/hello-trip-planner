@@ -127,9 +127,10 @@ export interface JobStatus {
   error?: string | null
 }
 
-/** 提交规划任务（幂等键由调用方生成：双击/重试复用同一任务，不重复烧 token） */
+/** 提交规划任务（幂等键由调用方生成：双击/重试复用同一任务，不重复烧 token；
+ *  budget 任务的幂等键由服务端按路线内容重写，客户端传任意合法 key 即可） */
 export async function submitJob(
-  kind: 'outline' | 'detail',
+  kind: 'outline' | 'detail' | 'budget',
   payload: any,
   idempotencyKey: string
 ): Promise<{ job_id: string; created: boolean; status: string }> {

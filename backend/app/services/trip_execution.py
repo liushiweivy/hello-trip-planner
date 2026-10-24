@@ -7,10 +7,22 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 
 from ..agents.trip_planner_agent import get_trip_planner_agent
-from ..models.schemas import TripDetailRequest, TripOutlineData, TripPlan, TripRequest
+from ..config import get_settings
+from ..models.schemas import (
+    Budget,
+    BudgetJobRequest,
+    BudgetJobResult,
+    TripDetailRequest,
+    TripOutlineData,
+    TripPlan,
+    TripRequest,
+)
+from .budget_cache import get_budget_cache, make_budget_key
 from .plan_store import get_plan_store
 
 logger = logging.getLogger("trip.exec")
@@ -53,6 +65,8 @@ async def execute_detail(detail_request: TripDetailRequest,
             if stored is not None:
                 logger.info("🗂️  详情持久化命中：record_id=%d 方案%d（零 LLM 调用）",
                             detail_request.record_id, detail_request.outline.plan_id)
+                # 旧版库存的预算不复活：预算改由后台任务按 24h 缓存现取
+                stored.pop("budget", None)
                 stored["source"] = "stored"
                 return TripPlan(**stored)
 
@@ -67,3 +81,36 @@ async def execute_detail(detail_request: TripDetailRequest,
         except Exception:  # noqa: BLE001
             logger.warning("🗂️  详情持久化失败（不影响主流程）", exc_info=True)
     return trip_plan
+
+
+async def execute_budget(budget_request: BudgetJobRequest,
+                         owner_key: str = "") -> BudgetJobResult:
+    """预算后台任务：先按路线账单查 24h 缓存（Redis/内存），未命中才调 LLM。
+
+    预算只写短期缓存，绝不落 trip_details/plan_cache 等库表。
+    """
+    plan = budget_request.plan  # 缓存键只取账单字段，budget/source/日期均不参与
+    cache = get_budget_cache()
+    key = make_budget_key(plan, budget_request.request)
+    loop = asyncio.get_running_loop()
+
+    try:
+        entry = await loop.run_in_executor(None, cache.get, key)
+    except Exception:  # noqa: BLE001 - Redis 中途故障按缓存未命中处理（与 put 同约定）
+        logger.warning("💰 预算缓存读取失败（按未命中继续）", exc_info=True)
+        entry = None
+    if entry is not None and entry.get("budget"):
+        logger.info("💰 预算缓存命中：%s 方案%d（零 LLM 调用）",
+                    plan.city, budget_request.plan_id)
+        return BudgetJobResult(budget=Budget(**entry["budget"]), source="cache")
+
+    budget, source = await get_trip_planner_agent().plan_budget(
+        plan, budget_request.request)
+    ttl_sec = max(1, get_settings().budget_cache_ttl_hours) * 3600
+    entry = {"budget": budget.model_dump(mode="json"),
+             "created_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+    try:
+        await loop.run_in_executor(None, cache.put, key, entry, ttl_sec)
+    except Exception:  # noqa: BLE001 - 缓存写失败只丢性能不丢结果
+        logger.warning("💰 预算缓存写入失败（不影响结果）", exc_info=True)
+    return BudgetJobResult(budget=budget, source=source)

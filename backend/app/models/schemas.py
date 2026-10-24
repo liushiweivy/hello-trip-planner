@@ -296,6 +296,20 @@ class TripDetailRequest(BaseModel):
     record_id: Optional[int] = Field(default=None, description="关联的行程记录 ID（有则详情持久化到该记录下，且优先读已存详情）")
 
 
+class BudgetJobRequest(BaseModel):
+    """预算后台任务入参：已定稿路线（不含预算）+ 原始请求（mock 标记/监控归因用）"""
+    record_id: Optional[int] = Field(default=None, description="关联的行程记录 ID（仅日志归因，不据此持久化预算）")
+    plan_id: int = Field(..., ge=1, le=4, description="方案编号 1-4")
+    request: Optional[TripRequest] = Field(default=None, description="原始旅行需求（缺省时按真实 LLM 处理）")
+    plan: TripPlan = Field(..., description="已定稿路线详情")
+
+
+class BudgetJobResult(BaseModel):
+    """预算后台任务结果：只在缓存与任务结果里短期存在，不进行程库表"""
+    budget: Budget = Field(..., description="预算汇总")
+    source: str = Field(default="llm", description="来源: llm/cache/mock/fallback(解析失败降级求和)")
+
+
 class POIInfo(BaseModel):
     """POI信息"""
     id: str = Field(..., description="POI ID")

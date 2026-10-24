@@ -95,7 +95,7 @@
             <a-menu-item key="overview">
               <span>📋 行程概览</span>
             </a-menu-item>
-            <a-menu-item key="budget" v-if="tripPlan.budget">
+            <a-menu-item key="budget" v-if="tripPlan.budget || detailPending || budgetState !== 'idle'">
               <span>💰 预算明细</span>
             </a-menu-item>
             <a-menu-item key="map">
@@ -122,7 +122,7 @@
           type="info"
           show-icon
           message="🤖 详情生成中"
-          description="景点、时间轴、地图已就位；餐饮、酒店、预算正在规划中，完成后自动填充，无需等待。"
+          description="景点、时间轴、地图已就位；餐饮、酒店正在规划中，完成后自动填充，无需等待。"
         />
         <a-alert
           v-else-if="detailError"
@@ -181,9 +181,22 @@
               </div>
             </a-card>
 
-            <!-- 预算占位（详情生成中） -->
+            <!-- 预算占位（详情生成中：路线就绪后预算才开工） -->
             <a-card v-else-if="detailPending" title="💰 预算明细" :bordered="false" class="budget-card">
-              <div class="pending-placeholder">💰 预算规划中…</div>
+              <div class="pending-placeholder">💰 路线就绪后自动生成预算…</div>
+            </a-card>
+
+            <!-- 预算占位（后台任务进行中：路线已可浏览） -->
+            <a-card v-else-if="budgetState === 'pending'" title="💰 预算明细" :bordered="false" class="budget-card">
+              <div class="pending-placeholder">💰 预算后台生成中…路线已就绪，不影响浏览</div>
+            </a-card>
+
+            <!-- 预算失败：可重试 -->
+            <a-card v-else-if="budgetState === 'failed'" title="💰 预算明细" :bordered="false" class="budget-card">
+              <div class="pending-placeholder">
+                预算生成失败
+                <a-button size="small" type="link" @click="retryBudget">重试</a-button>
+              </div>
             </a-card>
           </div>
 
@@ -411,8 +424,8 @@ import { DownOutlined } from '@ant-design/icons-vue'
 import AMapLoader from '@amap/amap-jsapi-loader'
 import html2canvas from 'html2canvas'
 import jsPDF from 'jspdf'
-import type { OutlineDay, PlanOutline, TripFormData, TripOutlineData, TripPlan } from '@/types'
-import { generateTripDetail } from '@/services/api'
+import type { Budget, OutlineDay, PlanOutline, TripFormData, TripOutlineData, TripPlan } from '@/types'
+import { generateTripDetail, pollJob, submitJob } from '@/services/api'
 
 const router = useRouter()
 const tripPlan = ref<TripPlan | null>(null)
@@ -438,6 +451,12 @@ const detailFailed = ref<Record<number, boolean>>({})
 const detailPending = ref(false)
 const detailError = ref('')
 const selectedOutline = ref<PlanOutline | null>(null)
+// 预算：路线定稿后由后台任务生成（不入库，服务端 Redis 24h 缓存）。
+// 只给「正在查看的方案」发预算任务，未查看的方案不烧 token。
+const budgetCache = new Map<number, Budget>()
+const budgetTasks = new Map<number, Promise<void>>()
+const budgetState = ref<'idle' | 'pending' | 'ready' | 'failed'>('idle')
+const currentPlanId = ref<number | null>(null)
 
 onMounted(async () => {
   const outlinesRaw = sessionStorage.getItem('tripOutlines')
@@ -452,6 +471,8 @@ onMounted(async () => {
   const data = sessionStorage.getItem('tripPlan')
   if (data) {
     tripPlan.value = JSON.parse(data)
+    const planIdRaw = sessionStorage.getItem('tripPlanId')
+    currentPlanId.value = planIdRaw ? Number(planIdRaw) : null
     if (!outlineData.value) {
       // 兼容旧版直通详情（无大纲缓存时）
       phase.value = 'detail'
@@ -459,6 +480,12 @@ onMounted(async () => {
       // 等待DOM渲染完成后初始化地图
       await nextTick()
       initMap()
+    }
+    // 恢复的页面：无预算且知道方案号与原始请求时，补发预算任务（24h 内服务端缓存秒回）
+    if (tripPlan.value && !tripPlan.value.budget && currentPlanId.value && tripRequest.value) {
+      ensureBudget(currentPlanId.value, tripPlan.value)
+    } else if (tripPlan.value?.budget) {
+      budgetState.value = 'ready'
     }
   }
 
@@ -500,6 +527,62 @@ const prefetchAllDetails = () => {
   })
 }
 
+// 预算结果只定向回填当前展示的方案（不整体替换 tripPlan，避免冲掉编辑中的数据）
+const applyBudget = (planId: number, budget: Budget) => {
+  budgetCache.set(planId, budget)
+  if (currentPlanId.value === planId && tripPlan.value && !tripPlan.value.budget) {
+    tripPlan.value.budget = budget
+    sessionStorage.setItem('tripPlan', JSON.stringify(tripPlan.value))
+  }
+  if (currentPlanId.value === planId) budgetState.value = 'ready'
+}
+
+// 懒触发预算任务：路线就绪后调用；本地已算过/任务在途则复用
+const ensureBudget = (planId: number, plan: TripPlan) => {
+  if (plan.budget) { // 已有预算（如 sessionStorage 恢复）：直接展示，不重发任务
+    budgetCache.set(planId, plan.budget)
+    budgetState.value = 'ready'
+    return
+  }
+  const cached = budgetCache.get(planId)
+  if (cached) {
+    applyBudget(planId, cached)
+    return
+  }
+  if (!tripRequest.value) return
+  budgetState.value = 'pending' // 含任务在途时切回该方案的场景
+  const existing = budgetTasks.get(planId)
+  if (existing) return
+  const task = submitJob('budget', {
+    record_id: outlineData.value?.record_id ?? null,
+    plan_id: planId,
+    request: tripRequest.value,
+    plan
+  }, crypto.randomUUID?.() || `bg-${Date.now()}`)
+    .then(({ job_id }) => pollJob(job_id, undefined, 3000, 10 * 60 * 1000))
+    .then((res) => {
+      if (res?.budget) {
+        applyBudget(planId, res.budget as Budget)
+      } else {
+        throw new Error('预算结果为空')
+      }
+    })
+    .catch((err) => {
+      console.error('预算生成失败:', err)
+      budgetTasks.delete(planId) // 允许重试
+      if (currentPlanId.value === planId) budgetState.value = 'failed'
+    })
+  budgetTasks.set(planId, task)
+  task.catch(() => {})
+}
+
+const retryBudget = () => {
+  if (currentPlanId.value && tripPlan.value) {
+    budgetState.value = 'idle'
+    ensureBudget(currentPlanId.value, tripPlan.value)
+  }
+}
+
 // 大纲时间轴某天的景点串
 const spotsText = (day: OutlineDay): string =>
   day.spots.map((s) => s.name).join(' → ') || '（待定）'
@@ -532,6 +615,9 @@ const buildSkeletonPlan = (plan: PlanOutline): TripPlan => ({
 
 // 选定方案：命中缓存秒开；否则先进骨架详情页，后台任务完成后自动填充
 const selectPlan = async (plan: PlanOutline) => {
+  currentPlanId.value = plan.plan_id
+  sessionStorage.setItem('tripPlanId', String(plan.plan_id))
+  budgetState.value = budgetCache.has(plan.plan_id) ? 'ready' : 'idle'
   const cached = detailCache.get(plan.plan_id)
   if (cached) {
     detailPending.value = false
@@ -539,6 +625,7 @@ const selectPlan = async (plan: PlanOutline) => {
     tripPlan.value = cached
     sessionStorage.setItem('tripPlan', JSON.stringify(cached))
     await enterDetailPhase()
+    ensureBudget(plan.plan_id, cached) // 路线已定稿：懒触发预算（本地/服务端缓存秒回）
     return
   }
   if (!tripRequest.value) {
@@ -557,6 +644,7 @@ const selectPlan = async (plan: PlanOutline) => {
     sessionStorage.setItem('tripPlan', JSON.stringify(data))
     detailPending.value = false
     message.success('详情已补全 ✅')
+    ensureBudget(plan.plan_id, data) // 详情就绪后后台生成预算
   } catch (error: any) {
     detailPending.value = false
     detailError.value = error.message || '详情生成失败'

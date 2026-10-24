@@ -63,10 +63,12 @@ npm run dev
 - 后端：FastAPI + hello-agents 0.2.9（SimpleAgent + HelloAgentsLLM）+ httpx
 - 前端：Vue 3 + TypeScript + Vite 6 + Ant Design Vue 4 + 高德 JS API 2.0
 - LLM：火山方舟 `ark-code-latest`（OpenAI 兼容协议，温度 0.3，16K max_tokens）
+- 预算：路线定稿后由后台任务独立生成（不入库），Redis 24h 短期缓存（未装/连不上自动降级进程内缓存）
 
 ## 主要接口
 
 - `POST /api/trip/plan` — 生成旅行计划（推理模型耗时约 2–5 分钟，前端已设 5 分钟超时）
+- `POST /api/jobs` + `GET /api/jobs/{id}` — 异步任务（大纲/预算；幂等提交 + 轮询）
 - `GET  /api/map/poi?keywords=&city=` — POI 搜索（需高德 Key）
 - `GET  /api/map/weather?city=` — 天气预报（需高德 Key）
 - `POST /api/map/route` — 步行/驾车/公交路线规划（需高德 Key）

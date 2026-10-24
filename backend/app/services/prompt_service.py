@@ -16,18 +16,21 @@ logger = logging.getLogger("trip.prompts")
 
 _PROMPT_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompts")
-_VERSION_RE = re.compile(r"<!--\s*prompt_version:\s*(\S+?)\s*-->")
+# 版本号取 prompt_version: 后的首个 token（注释里允许带日期/说明等后缀文字）
+_VERSION_RE = re.compile(r"<!--\s*prompt_version:\s*(\S+)")
 
 
 def _load_fallback(name: str) -> str:
     """内嵌兜底：文件丢失时回落到 agent 模块里的内联常量（服务永远可启动）。
     函数内延迟 import 避免循环依赖（agent 顶层 import 本模块）。"""
     from ..agents.trip_planner_agent import (
+        BUDGET_SYSTEM_PROMPT,
         OUTLINE_SYSTEM_PROMPT,
         PLANNER_SYSTEM_PROMPT,
     )
     return {"outline": OUTLINE_SYSTEM_PROMPT,
-            "planner": PLANNER_SYSTEM_PROMPT}[name]
+            "planner": PLANNER_SYSTEM_PROMPT,
+            "budget": BUDGET_SYSTEM_PROMPT}[name]
 
 
 def _strip_header(raw: str) -> str:

@@ -25,6 +25,7 @@ DEFAULT_POI_KEYWORDS = ["著名景点", "主题公园", "海滨海岛", "博物�
 MAX_LLM_CANDIDATES = 30  # 喂给 LLM 的候选 POI 上限（去重后），再多 prompt 冗长反而不聚焦
 DETAIL_CHUNK_DAYS = 5   # 单次详情调用最多生成的天数：14 天一次出 JSON 必超 max_tokens 截断
 TRUNCATED_RETRY_MAX_TOKENS = 32768  # 输出被截断时的重试预算（默认 24576 不够用才走到这）
+BUDGET_MAX_TOKENS = 1024  # 预算汇总 JSON 很小，独立调用只需极小输出预算
 MAX_ENRICH_SPOTS = 40   # 缓存/预制大纲 serve 时坐标反查补全的景点上限（一次性，补完回写缓存）
 
 from hello_agents import SimpleAgent
@@ -68,7 +69,7 @@ PLANNER_SYSTEM_PROMPT = """你是一名资深中国境内旅行规划师。请�
    整趟行程要**覆盖不同类型**（海滨/主题公园/文化古迹/特色街区/自然风光），
    除非用户明确只要某一类，否则不要整趟都是同一类型（比如全是公园）。
 4. 酒店从「实时酒店数据」中挑选，位置尽量靠近主要景点或交通枢纽。
-5. 所有费用以人民币估算，预算汇总要与明细一致。
+5. 各项门票/餐饮/酒店单价要如实填写（ticket_price / estimated_cost），但**不要输出预算汇总**，budget 字段不需要生成。
 6. 只输出一个 JSON 对象，不要输出 JSON 之外的任何解释文字，不要使用 markdown 代码块。
 7. 请高效思考，快速给出最终 JSON，避免冗长推理。
 
@@ -109,11 +110,26 @@ JSON 结构：
     {"date": "YYYY-MM-DD", "day_weather": "晴", "night_weather": "多云",
      "day_temp": 25, "night_temp": 15, "wind_direction": "南风", "wind_power": "1-3级"}
   ],
-  "overall_suggestions": "出行准备、交通、避坑等总体建议",
-  "budget": {
-    "total_attractions": 0, "total_hotels": 0, "total_meals": 0,
-    "total_transportation": 0, "total": 0
-  }
+  "overall_suggestions": "出行准备、交通、避坑等总体建议"
+}"""
+
+
+BUDGET_SYSTEM_PROMPT = """你是一名资深旅行费用核算师。用户会给你一份**已定稿**的旅行路线账单（城市、天数、每日景点门票、酒店价格、餐饮价格、交通方式）。请汇总整趟行程的人民币费用。
+
+口径：
+1. total_attractions / total_hotels / total_meals：按账单明细逐项求和；账单中缺失的常规花费（如免费景点无门票、某日未列酒店）按 0 计，不要凭空添加项目。
+2. total_transportation：账单每日交通方式对应的市内交通费（公交地铁约 20-30 元/人/天，打车约 80-150 元/人/天，租车/自驾含油费停车费）；若用户需求提到跨城/往返大交通（高铁、飞机），按该城市常规票价计入。
+3. total 必须等于四项之和。
+4. 所有数字为非负整数，单位元，这是一人的花费。
+5. 只输出一个 JSON 对象，不要输出 JSON 之外的任何文字，不要使用 markdown 代码块。请高效思考，快速给出结果。
+
+JSON 结构：
+{
+  "total_attractions": 0,
+  "total_hotels": 0,
+  "total_meals": 0,
+  "total_transportation": 0,
+  "total": 0
 }"""
 
 
@@ -509,13 +525,6 @@ class TripPlannerService:
             spots = "、".join(a.name for a in day.attractions) or "（无景点）"
             hotel = f"｜住:{day.hotel.name}" if getattr(day, "hotel", None) else ""
             logger.info("  └ D%d %s：%s%s", day.day_index + 1, day.date, spots, hotel)
-        if plan.budget:
-            logger.info("  └ 预算合计：%s 元（门票 %s｜住宿 %s｜餐饮 %s｜交通 %s）",
-                        getattr(plan.budget, "total", "?"),
-                        getattr(plan.budget, "total_attractions", "?"),
-                        getattr(plan.budget, "total_hotels", "?"),
-                        getattr(plan.budget, "total_meals", "?"),
-                        getattr(plan.budget, "total_transportation", "?"))
 
     async def plan_trip(self, request: TripRequest) -> TripPlan:
         """主流程：采集数据 → LLM 规划 → 解析校验（带一次修复重试）"""
@@ -763,7 +772,7 @@ class TripPlannerService:
         return "\n".join(lines)
 
     async def plan_detail(self, request: TripRequest, outline: PlanOutline) -> TripPlan:
-        """把选定大纲扩写成完整计划：景点锁定，只补描述/餐饮/酒店/预算"""
+        """把选定大纲扩写成完整计划：景点锁定，补描述/餐饮/酒店（预算已拆到后台任务）"""
         t_start = time.monotonic()
         endpoint = "/api/trip/detail"
         logger.info("🚀 生成方案详情：%s 方案%d「%s」%s",
@@ -790,7 +799,8 @@ class TripPlannerService:
             fresh_weather = await self._fetch_weather(request.city)
             if fresh_weather:
                 plan = plan.model_copy(update={"weather_info": fresh_weather})
-            plan = plan.model_copy(update={"source": "cache"})
+            # 旧版详情缓存里带预算：预算已改为后台任务生成、不随行程返回，统一剥除
+            plan = plan.model_copy(update={"source": "cache", "budget": None})
             cache.touch(dkey)
             ms = int((time.monotonic() - t_start) * 1000)
             self._record(endpoint, "detail", "cache_hit", ms, None, "", "",
@@ -837,13 +847,14 @@ class TripPlannerService:
         extra = (
             f"\n\n用户已从多套大纲中选定「{outline.style}」方案，"
             "每天景点安排已在【已选定方案大纲】中锁定：名称、坐标、每日选点一律不得更改、不得增删；"
-            "你只需为每个景点补全介绍/游玩时长/门票，并安排三餐、酒店、交通与预算。"
+            "你只需为每个景点补全介绍/游玩时长/门票，并安排三餐、酒店、交通。"
+            "不需要输出预算汇总（预算由后续独立环节生成）。"
             "overall_suggestions 需契合该方案风格。"
         )
         if day_scope:
             extra += (
                 f"\n{day_scope}：days 数组只包含【已选定方案大纲】中列出的这几天，"
-                "day_index 与日期必须与之完全一致；budget 只汇总这几天的费用。"
+                "day_index 与日期必须与之完全一致。"
             )
         prompt = self._build_user_prompt(request, poi_text, weather_text, extra_instruction=extra)
 
@@ -953,19 +964,9 @@ class TripPlannerService:
         request: TripRequest, outline: PlanOutline,
         blocks: List[TripPlan], weather: List[WeatherInfo],
     ) -> TripPlan:
-        """合并分段详情：days 按 day_index 排序拼接，预算逐块求和"""
+        """合并分段详情：days 按 day_index 排序拼接（预算已不在详情阶段生成）"""
         days = sorted((d for bp in blocks for d in bp.days),
                       key=lambda d: d.day_index)
-        budgets = [bp.budget for bp in blocks if bp.budget]
-        budget = None
-        if budgets:
-            budget = Budget(
-                total_attractions=sum(b.total_attractions for b in budgets),
-                total_hotels=sum(b.total_hotels for b in budgets),
-                total_meals=sum(b.total_meals for b in budgets),
-                total_transportation=sum(b.total_transportation for b in budgets),
-                total=sum(b.total for b in budgets),
-            )
         suggestions = next(
             (bp.overall_suggestions for bp in blocks if bp.overall_suggestions), "")
         return TripPlan(
@@ -975,7 +976,6 @@ class TripPlannerService:
             days=days,
             weather_info=weather,
             overall_suggestions=suggestions or f"{outline.style}方案（长行程分段生成）",
-            budget=budget,
         )
 
     @staticmethod
@@ -991,6 +991,127 @@ class TripPlannerService:
             raise ValueError("响应中未找到 JSON 对象")
         data = json.loads(text[start : end + 1])
         return TripPlan(**data)
+
+    # ============ 阶段三：预算（路线定稿后由后台任务独立生成，不进行程库表） ============
+
+    @staticmethod
+    def _compute_budget(plan: TripPlan) -> Budget:
+        """确定性口径：按明细求和（市内交通按 30 元/人/天兜底），mock 与 LLM 失败时用"""
+        total_attractions = sum(a.ticket_price for d in plan.days for a in d.attractions)
+        total_hotels = sum(d.hotel.estimated_cost for d in plan.days if d.hotel)
+        total_meals = sum(m.estimated_cost for d in plan.days for m in d.meals)
+        total_transportation = 30 * len(plan.days)
+        return Budget(
+            total_attractions=total_attractions,
+            total_hotels=total_hotels,
+            total_meals=total_meals,
+            total_transportation=total_transportation,
+            total=total_attractions + total_hotels + total_meals + total_transportation,
+        )
+
+    @staticmethod
+    def _parse_budget(raw: str) -> Budget:
+        """从 LLM 输出提取预算 JSON（兼容被 {"budget": {...}} 外壳包裹）"""
+        text = raw.strip()
+        if "```" in text:
+            match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+            if match:
+                text = match.group(1)
+        start, end = text.find("{"), text.rfind("}")
+        if start == -1 or end == -1 or end < start:
+            raise ValueError("响应中未找到 JSON 对象")
+        data = json.loads(text[start : end + 1])
+        if isinstance(data.get("budget"), dict):
+            data = data["budget"]
+        return Budget(**data)
+
+    @staticmethod
+    def _build_budget_prompt(plan: TripPlan,
+                             request: Optional[TripRequest] = None) -> str:
+        """把已定稿路线压成紧凑「账单」：预算调用只需价格信息，不带描述/坐标/天气"""
+        meal_labels = {"breakfast": "早餐", "lunch": "午餐",
+                       "dinner": "晚餐", "snack": "小吃"}
+        lines = [f"【城市】{plan.city}", f"【天数】{len(plan.days)}"]
+        if request:
+            lines.append(f"【交通偏好】{request.transportation}")
+            lines.append(f"【住宿偏好】{request.accommodation}")
+            if request.free_text_input:
+                lines.append(f"【用户额外要求】{request.free_text_input}")
+        lines.append("【路线账单】")
+        for day in sorted(plan.days, key=lambda d: d.day_index):
+            lines.append(f"D{day.day_index + 1} 交通:{day.transportation}")
+            if day.attractions:
+                lines.append("  景点: " + "、".join(
+                    f"{a.name}(门票{a.ticket_price}元)" for a in day.attractions))
+            if day.hotel:
+                lines.append(f"  酒店: {day.hotel.name}({day.hotel.estimated_cost}元/晚)")
+            if day.meals:
+                lines.append("  餐饮: " + "、".join(
+                    f"{meal_labels.get(m.type, m.type)} {m.name}({m.estimated_cost}元)"
+                    for m in day.meals))
+        return "\n".join(lines)
+
+    async def plan_budget(self, plan: TripPlan,
+                          request: Optional[TripRequest] = None) -> Tuple[Budget, str]:
+        """路线定稿后的独立预算调用。返回 (预算, 来源 llm/mock)。
+
+        - mock 请求：明细确定性求和，零 token（压测/演示）
+        - 真实请求：过成本熔断 + 并发闸门，一次小调用（max_tokens=1024），
+          解析失败带错误重试一次，再失败降级为确定性求和
+        """
+        t_start = time.monotonic()
+        is_mock = bool(request and request.mock_llm)
+        if is_mock:
+            budget = self._compute_budget(plan)
+            if request:
+                self._record("/api/jobs", "budget", "success",
+                             int((time.monotonic() - t_start) * 1000), None, "", "",
+                             request)
+            logger.info("💰 MOCK 预算完成：%s → 合计 %d 元", plan.city, budget.total)
+            return budget, "mock"
+
+        ensure_budget(False)  # 成本熔断：真要烧 token 前查每日预算
+        prompt = self._build_budget_prompt(plan, request)
+        budget_prompt, budget_ver = get_prompt("budget")
+        logger.info("🤖 预算 LLM 调用开始（prompt %d 字符，%s）", len(prompt), budget_ver)
+        raw, usage, llm_ms, queue_ms = await self._timed_llm(
+            budget_prompt, prompt, max_tokens=BUDGET_MAX_TOKENS)
+        source = "llm"
+        try:
+            budget = self._parse_budget(raw)
+            if request:
+                self._record("/api/jobs", "budget", "success", llm_ms, usage,
+                             prompt, raw, request, queue_ms=queue_ms)
+        except (ValueError, json.JSONDecodeError) as exc:
+            logger.warning("⚠️  预算首次解析失败（%s），带错误信息重试一次", exc)
+            if request:
+                self._record("/api/jobs", "budget", "error", llm_ms, usage,
+                             prompt, raw, request, error=str(exc), queue_ms=queue_ms)
+            repair_prompt = prompt + (
+                f"\n\n你上一次的输出无法解析，错误：{exc}。"
+                "请严格只输出符合结构的单个 JSON 对象，不要输出其他任何内容。"
+            )
+            raw_retry, usage2, ms2, qms2 = await self._timed_llm(
+                budget_prompt, repair_prompt, max_tokens=BUDGET_MAX_TOKENS)
+            try:
+                budget = self._parse_budget(raw_retry)
+                if request:
+                    self._record("/api/jobs", "budget_repair", "success", ms2, usage2,
+                                 repair_prompt, raw_retry, request, attempt=2,
+                                 queue_ms=qms2)
+            except Exception as exc2:  # noqa: BLE001
+                logger.error("❌ 预算修复重试仍失败（%s），降级为明细确定性求和", exc2)
+                if request:
+                    self._record("/api/jobs", "budget_repair", "error", ms2, usage2,
+                                 repair_prompt, raw_retry, request, error=str(exc2),
+                                 attempt=2, queue_ms=qms2)
+                budget = self._compute_budget(plan)
+                source = "fallback"  # 两次解析都失败：结果是确定性求和而非 LLM 产出
+        logger.info("💰 预算完成：%s 合计 %d 元（门票 %d｜住宿 %d｜餐饮 %d｜交通 %d，%.1fs）",
+                    plan.city, budget.total, budget.total_attractions,
+                    budget.total_hotels, budget.total_meals,
+                    budget.total_transportation, time.monotonic() - t_start)
+        return budget, source
 
     # ============ 兜底 ============
 

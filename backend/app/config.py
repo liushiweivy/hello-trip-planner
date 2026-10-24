@@ -66,6 +66,10 @@ class Settings(BaseSettings):
     # 规划缓存（与监控同库；连不上自动降级内存）
     cache_ttl_days: int = 7  # 运行时缓存有效期；预制路线（seed）永不过期
 
+    # 预算缓存（预算不入库，只走 Redis 短期 TTL；默认 db=1 与本机其他项目隔离）
+    redis_url: str = "redis://127.0.0.1:6379/1"
+    budget_cache_ttl_hours: int = 24  # 近 1 天内生成过的预算直接复用，零 LLM 调用
+
     # 监控存储（MySQL；连不上自动降级内存）
     metrics_mysql_host: str = "127.0.0.1"
     metrics_mysql_port: int = 3306
