@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>智能旅行助手 · 规划流水线流程图</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600&family=Noto+Serif+SC:wght@400&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --color-paper:   #f5f5f5;
+      --color-ink:     #2d3142;
+      --color-muted:   #4f5d75;
+      --color-soft:    #5a6580;
+      --color-accent:  #bf4520;
+      --font-sans:     'Geist', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+      --font-serif:    'Instrument Serif', 'Noto Serif SC', 'SimSun', serif;
+      --font-mono:     'Geist Mono', ui-monospace, monospace;
+    }
+    body {
+      font-family: var(--font-sans);
+      background: var(--color-paper);
+      color: var(--color-ink);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem 2rem;
+    }
+    .frame { max-width: 1320px; width: 100%; }
+    .diagram-container { width: 100%; overflow-x: auto; }
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 0.5rem;
+    }
+    h1 {
+      font-family: var(--font-serif);
+      font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem);
+      font-weight: 400;
+      letter-spacing: -0.01em;
+      line-height: 1.15;
+      color: var(--color-ink);
+      margin-bottom: 1.5rem;
+    }
+    svg { width: 100%; min-width: 1280px; display: block; }
+    @media print {
+      .diagram-container { overflow-x: visible; }
+      svg { min-width: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Flowchart · Diagram Design</p>
+    <h1>智能旅行助手 — 一次规划的完整流水线</h1>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="trip-planner-flow-title trip-planner-flow-desc">
+        <title id="trip-planner-flow-title">智能旅行助手规划流水线流程图</title>
+        <desc id="trip-planner-flow-desc">用户提交目的地、日期和偏好后，系统先查大纲缓存，未命中则按是否配置高德 Key 决定并发预取 POI、酒店、天气还是走纯 LLM 知识规划，随后由 LLM 一次成稿，JSON 解析失败会自动修复重试一次，成功后回填坐标、写缓存并落盘，最后由前端渲染行程卡和地图。</desc>
+        <defs>
+          <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+          <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#bf4520"/></marker>
+          <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+        </defs>
+
+        <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+        <!-- Connectors first -->
+
+        <!-- start -> D1 -->
+        <line x1="440" y1="88" x2="440" y2="112" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+        <!-- D1 cache hit -> right channel -> end -->
+        <path d="M 540,148 H 880 V 600 H 520" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#arrow)"/>
+        <rect x="556" y="126" width="92" height="16" rx="2" fill="#f5f5f5"/>
+        <text x="602" y="138" fill="#5a6580" font-size="12" font-weight="500" text-anchor="middle"
+              font-family="'Geist','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif">命中·直接返回</text>
+
+        <!-- D1 miss -> D2 -->
+        <line x1="440" y1="184" x2="440" y2="208" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <rect x="452" y="186" width="36" height="16" rx="2" fill="#f5f5f5"/>
+        <text x="470" y="198" fill="#5a6580" font-size="12" font-weight="500" text-anchor="middle"
+              font-family="'Geist','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif">未中</text>
+
+        <!-- D2 has-key -> prefetch -->
+        <line x1="340" y1="244" x2="280" y2="244" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <rect x="298" y="222" width="24" height="16" rx="2" fill="#f5f5f5"/>
+        <text x="310" y="234" fill="#5a6580" font-size="12" font-weight="500" text-anchor="middle"
+              font-family="'Geist','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif">有</text>
+
+        <!-- prefetch -> LLM -->
+        <path d="M 180,272 V 334 H 340" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+        <!-- D2 no-key -> LLM (pure knowledge mode) -->
+        <line x1="440" y1="280" x2="440" y2="304" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <rect x="452" y="280" width="92" height="16" rx="2" fill="#f5f5f5"/>
+        <text x="498" y="292" fill="#5a6580" font-size="12" font-weight="500" text-anchor="middle"
+              font-family="'Geist','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif">无·纯知识规划</text>
+
+        <!-- LLM -> D3 -->
+        <line x1="440" y1="364" x2="440" y2="404" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+        <!-- D3 fail -> repair -->
+        <line x1="540" y1="440" x2="640" y2="440" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <rect x="578" y="418" width="24" height="16" rx="2" fill="#f5f5f5"/>
+        <text x="590" y="430" fill="#5a6580" font-size="12" font-weight="500" text-anchor="middle"
+              font-family="'Geist','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif">失败</text>
+
+        <!-- repair loop back to LLM -->
+        <path d="M 740,412 V 336 H 540" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#arrow)"/>
+
+        <!-- D3 pass -> persist (accent: happy-path exit) -->
+        <line x1="440" y1="476" x2="440" y2="500" stroke="#bf4520" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+        <rect x="452" y="478" width="36" height="16" rx="2" fill="#f5f5f5"/>
+        <text x="470" y="490" fill="#bf4520" font-size="12" font-weight="500" text-anchor="middle"
+              font-family="'Geist','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif">通过</text>
+
+        <!-- persist -> end -->
+        <line x1="440" y1="548" x2="440" y2="572" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+        <!-- Nodes -->
+
+        <!-- start terminal -->
+        <rect x="360" y="40" width="160" height="48" rx="20" fill="#f5f5f5"/>
+        <rect x="360" y="40" width="160" height="48" rx="20" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+        <text x="440" y="60" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle"
+              font-family="'Geist','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif">用户提交需求</text>
+        <text x="440" y="76" fill="#4f5d75" font-size="11" text-anchor="middle"
+              font-family="'Geist','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif">目的地 / 日期 / 偏好</text>
+
+        <!-- D1 cache decision -->
+        <polygon points="440,112 540,148 440,184 340,148" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+        <text x="440" y="152" fill="#2d3142" font-size="12" font-weight="500" text-anchor="middle"
+              font-family="'Geist','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif">大纲缓存命中？</text>
+
+        <!-- D2 amap key decision -->
+        <polygon points="440,208 540,244 440,280 340,244" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+        <text x="440" y="248" fill="#2d3142" font-size="12" font-weight="500" text-anchor="middle"
+              font-family="'Geist','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif">高德 KEY 已配置？</text>
+
+        <!-- prefetch step -->
+        <rect x="80" y="216" width="200" height="56" rx="6" fill="#f5f5f5"/>
+        <rect x="80" y="216" width="200" height="56" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+        <text x="180" y="240" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle"
+              font-family="'Geist','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif">并发预取高德数据</text>
+        <text x="180" y="258" fill="#4f5d75" font-size="9" text-anchor="middle"
+              font-family="'Geist Mono',ui-monospace,monospace">POI / hotels / weather</text>
+
+        <!-- LLM focal step -->
+        <rect x="340" y="304" width="200" height="60" rx="6" fill="#f5f5f5"/>
+        <rect x="340" y="304" width="200" height="60" rx="6" fill="rgba(191,69,32,0.08)" stroke="#bf4520" stroke-width="1.2"/>
+        <text x="440" y="328" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle"
+              font-family="'Geist','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif">LLM 一次成稿</text>
+        <text x="440" y="348" fill="#4f5d75" font-size="9" text-anchor="middle"
+              font-family="'Geist Mono',ui-monospace,monospace">ark-code-latest · JSON</text>
+
+        <!-- D3 json parse decision -->
+        <polygon points="440,404 540,440 440,476 340,440" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+        <text x="440" y="444" fill="#2d3142" font-size="12" font-weight="500" text-anchor="middle"
+              font-family="'Geist','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif">JSON 解析通过？</text>
+
+        <!-- repair step -->
+        <rect x="640" y="412" width="200" height="56" rx="6" fill="#f5f5f5"/>
+        <rect x="640" y="412" width="200" height="56" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+        <text x="740" y="436" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle"
+              font-family="'Geist','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif">自动修复并重试</text>
+        <text x="740" y="454" fill="#4f5d75" font-size="9" text-anchor="middle"
+              font-family="'Geist Mono',ui-monospace,monospace">repair pass · retry ×1</text>
+
+        <!-- persist step -->
+        <rect x="340" y="500" width="200" height="48" rx="6" fill="#f5f5f5"/>
+        <rect x="340" y="500" width="200" height="48" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+        <text x="440" y="528" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle"
+              font-family="'Geist','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif">坐标回填 · 缓存 · 落盘</text>
+
+        <!-- end terminal -->
+        <rect x="360" y="572" width="160" height="56" rx="20" fill="#f5f5f5"/>
+        <rect x="360" y="572" width="160" height="56" rx="20" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+        <text x="440" y="596" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle"
+              font-family="'Geist','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif">前端渲染行程</text>
+        <text x="440" y="612" fill="#4f5d75" font-size="11" text-anchor="middle"
+              font-family="'Geist','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif">行程卡 · 地图 · 配图</text>
+
+        <!-- Legend strip -->
+        <line x1="40" y1="656" x2="1240" y2="656" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+        <text x="40" y="684" fill="#4f5d75" font-size="12" font-weight="500"
+              font-family="'Geist','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif">图例</text>
+
+        <rect x="104" y="672" width="18" height="14" rx="7" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="0.8"/>
+        <text x="132" y="684" fill="#4f5d75" font-size="12" font-weight="500"
+              font-family="'Geist','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif">起止</text>
+
+        <rect x="196" y="672" width="18" height="14" rx="3" fill="#ffffff" stroke="#2d3142" stroke-width="0.8"/>
+        <text x="224" y="684" fill="#4f5d75" font-size="12" font-weight="500"
+              font-family="'Geist','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif">处理步骤</text>
+
+        <polygon points="316,672 330,679 316,686 302,679" fill="#ffffff" stroke="#2d3142" stroke-width="0.8"/>
+        <text x="340" y="684" fill="#4f5d75" font-size="12" font-weight="500"
+              font-family="'Geist','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif">判断分支</text>
+
+        <rect x="432" y="672" width="18" height="14" rx="3" fill="rgba(191,69,32,0.08)" stroke="#bf4520" stroke-width="1"/>
+        <text x="460" y="684" fill="#4f5d75" font-size="12" font-weight="500"
+              font-family="'Geist','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif">焦点（LLM 成稿）</text>
+
+        <line x1="632" y1="679" x2="664" y2="679" stroke="#bf4520" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+        <text x="672" y="684" fill="#4f5d75" font-size="12" font-weight="500"
+              font-family="'Geist','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif">成功路径</text>
+      </svg>
+    </div>
+  </div>
+</body>
+</html>
